@@ -339,7 +339,20 @@ def pdf_for(bank, page_html, page_url):
     return urljoin(page_url, m.group(1).replace("&amp;", "&").replace("\\/", "/"))
 
 
+# Banks whose server sends an incomplete certificate chain (fails even on GitHub's servers). Only public rate pages are read,
+# nothing is sent, and the review pull request is the safety net.
+INSECURE_OK = {"IDBI Bank"}
+
+
 def scrape(bank, html=None):
+    global INSECURE
+    old = INSECURE
+    if bank in INSECURE_OK: INSECURE = True
+    try: return _scrape(bank, html)
+    finally: INSECURE = old
+
+
+def _scrape(bank, html=None):
     url = BANKS[bank]
     if bank in PDF_BANKS and html is None:
         page = fetch(url)
