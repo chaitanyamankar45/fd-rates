@@ -45,6 +45,7 @@ RENDER_FIRST = {"Yes Bank", "IndusInd Bank", "Bank of India"}      # their table
 SENIOR_TAB = {"Bank of India": "SENIOR CITIZEN"}
 DEFAULT_SENIOR_ADD = 0.50      # only used when a page has no senior column and does not state its own add-on
 MIN_DAYS, MAX_DAYS = 7, 3650
+NOT_REGULAR = re.compile(r"aarogya|tax[\s-]*sav", re.I)    # special products listed inside the normal table (health FD, tax-saving FD)
 
 
 class Tables(HTMLParser):
@@ -216,7 +217,7 @@ def parse_tables(html, url=""):
         head = " ".join(" ".join(r) for r in tbl[:6]).lower()
         if re.search(r"\d+\s*crore\s*-\s*less than|above\s*\d{2,}\s*cr|not allowed", head): continue     # bulk-deposit tables
         tcol = tenor_column(tbl)
-        rows = [(slab_days(r[tcol]), r) for r in tbl if len(r) > tcol and slab_days(r[tcol])]
+        rows = [(slab_days(r[tcol]), r) for r in tbl if len(r) > tcol and slab_days(r[tcol]) and not NOT_REGULAR.search(r[tcol])]
         if len(rows) < 8: continue
         gcol, scol = find_columns(tbl)
         if gcol == tcol: gcol = None
