@@ -18,7 +18,9 @@ import argparse, datetime as dt, json, re, sys
 import scrape_banks
 
 MODEL = "claude-sonnet-5-5"
-DEFAULT_BANKS = ["HDFC Bank", "ICICI Bank", "State Bank of India", "Union Bank of India"]
+# Banks with a page address in scrape_banks.BANKS are read for free first; the others (page address not set up yet) go to the AI agent.
+AI_ONLY = ["Bank of India", "IDFC FIRST Bank", "Yes Bank", "IndusInd Bank", "IDBI Bank", "Central Bank of India"]
+DEFAULT_BANKS = list(scrape_banks.BANKS) + AI_ONLY
 MAX_JUMP = 0.75   # percentage points vs the previous feed that needs extra attention
 
 PROMPT = """Find the bank's CURRENT domestic fixed deposit interest rates (deposits below Rs 3 crore, regular / \
@@ -83,7 +85,7 @@ def slab_at(entry, days):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--banks", help="comma separated; default = all four")
+    ap.add_argument("--banks", help="comma separated; default = all banks above")
     ap.add_argument("--prev", help="previous rates.json to diff against and to keep last-known rates from")
     ap.add_argument("--out", default="rates.json")
     ap.add_argument("--no-ai", action="store_true", help="scraper only, never call the AI agent")
