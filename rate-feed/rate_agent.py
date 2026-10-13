@@ -14,12 +14,12 @@ Feed format: {"asOf","sample","banks":{"Bank":{"slabs":[[fromDays,toDays,general
 senior = null means the bank has no separate senior rate for that slab ("No slab").
 Nothing is published automatically: a person reads review.md, then merges the pull request.
 """
-import argparse, datetime as dt, json, re, sys
+import os, argparse, datetime as dt, json, re, sys
 import scrape_banks
 
 MODEL = "claude-sonnet-5-5"
 # Banks with a page address in scrape_banks.BANKS are read for free first; the others (page address not set up yet) go to the AI agent.
-AI_ONLY = ["Bank of India", "IDFC FIRST Bank", "Yes Bank", "IndusInd Bank", "IDBI Bank", "Central Bank of India"]
+AI_ONLY = []
 DEFAULT_BANKS = list(scrape_banks.BANKS) + AI_ONLY
 MAX_JUMP = 0.75   # percentage points vs the previous feed that needs extra attention
 
@@ -83,23 +83,72 @@ def slab_at(entry, days):
     return None
 
 
+# Hand-entered rates for banks whose sites block automated readers: a Google Sheet "published to the web" as CSV.
+# Columns: Bank | From days | To days | General % | Senior % | Effective date | Source link   (one row per tenor)
+SHEET_URL = os.environ.get("MANUAL_SHEET_URL") or "https://docs.google.com/spreadsheets/d/e/2PACX-1vSaTTT5L3_YPVV4TvEfYJ2Max940iDNsvfAZ8kVdTnknxGJpwWQa8LR7CbYpJJD62e6wNSyoVJ3YhC5/pub?gid=0&single=true&output=csv"
+
+
+def load_sheet():
+    """{bank: {"slabs": [...], "source": url, "effective": date}} from the sheet, plus a list of warnings."""
+    import csv, io
+    out, warns = {}, []
+    try:
+        text = scrape_banks.fetch(SHEET_URL)
+    except Exception as e:
+        return {}, [f"manual sheet could not be read: {e}"]
+    for i, row in enumerate(csv.reader(io.StringIO(text.lstrip("\ufeff")))):
+        if i == 0 or not any(c.strip() for c in row): continue
+        row = [c.strip() for c in row] + [""] * 7
+        bank = row[0]
+        try:
+            lo, hi, g = int(float(row[1])), int(float(row[2])), float(row[3].replace("%", ""))
+            sr = float(row[4].replace("%", "")) if row[4] else None
+        except ValueError:
+            warns.append(f"manual sheet row {i + 1} ({bank or 'no bank'}) is not numeric - ignored"); continue
+        e = out.setdefault(bank, {"slabs": [], "source": "", "effective": ""})
+        e["slabs"].append([lo, hi, g, sr])
+        e["source"] = e["source"] or row[6]
+        e["effective"] = max(e["effective"], row[5])
+    return out, warns
+
+
+def load_manual(bank):
+    """Hand-entered rates for a bank whose site blocks automated readers: manual/<Bank_Name>.json
+    {"effective": "YYYY-MM-DD", "source": "https://...", "slabs": [[from, to, general, senior|null], ...]}"""
+    import os, re
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manual", re.sub(r"\W+", "_", bank) + ".json")
+    return json.load(open(path)) if os.path.exists(path) else None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--banks", help="comma separated; default = all banks above")
     ap.add_argument("--prev", help="previous rates.json to diff against and to keep last-known rates from")
     ap.add_argument("--out", default="rates.json")
+    ap.add_argument("--insecure", action="store_true", help="skip HTTPS certificate checks (testing on a PC only)")
     ap.add_argument("--no-ai", action="store_true", help="scraper only, never call the AI agent")
     a = ap.parse_args()
+    if a.insecure: scrape_banks.INSECURE = True
     banks = [b.strip() for b in a.banks.split(",")] if a.banks else DEFAULT_BANKS
+    sheet, sheet_warns = load_sheet()
+    banks += [b for b in sheet if b not in banks]
     prev = json.load(open(a.prev))["banks"] if a.prev else {}
     client = None
 
     feed = {"asOf": dt.date.today().isoformat(), "sample": False, "banks": {}}
     review = [f"# Rate review {feed['asOf']}\n", "Check each bank against its official page before merging.\n"]
+    for w in sheet_warns: review.append(f"- **WARNING**: {w}")
     for bank in banks:
         print("fetching", bank, file=sys.stderr)
         entry, probs, how = None, [], ""
-        if bank in scrape_banks.BANKS:
+        manual = sheet.get(bank) or load_manual(bank)
+        if manual:
+            entry, probs = check(manual)
+            how = "MANUAL entry from the Google Sheet (its site blocks automated readers)" if bank in sheet else "MANUAL entry from manual/ (its site blocks automated readers)"
+            eff = manual.get("effective")
+            if entry and eff and (dt.date.today() - dt.date.fromisoformat(eff[:10])).days > 150:
+                probs.append(f"manual rates are from {eff} - open the bank's page and update manual/ if they changed")
+        elif bank in scrape_banks.BANKS:
             try:
                 d = scrape_banks.scrape(bank)
                 entry, probs = check(d)

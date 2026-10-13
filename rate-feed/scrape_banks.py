@@ -26,12 +26,23 @@ BANKS = {
     "Axis Bank": "https://www.axis.bank.in/deposits/fixed-deposits/fd-interest-rates",
     "Kotak Mahindra Bank": "https://www.kotak.bank.in/en/rates/interest-rates.html",
     "Punjab National Bank": "https://www.pnb.bank.in/Interest-Rates-Deposit.html",
+    "IDFC FIRST Bank": "https://www.idfcfirst.bank.in/interest-rate",
+    # added from the URLs you sent; IDBI and Central Bank are plain HTML tables, the other three need `--debug` checks
+    "IDBI Bank": "https://www.idbi.bank.in/interest-rates.aspx",
+    "Central Bank of India": "https://www.centralbank.bank.in/en/domestic-term-deposit-interest-rate-per-annum",
+    "Bank of India": "https://bankofindia.bank.in/interest-rate/rupee-term-deposit-rate",
+    "Yes Bank": "https://www.yes.bank.in/personal-banking/yes-individual/deposits/fixed-deposit",
+    "IndusInd Bank": "https://www.indusind.bank.in/in/en/personal/fixed-deposit-interest-rate.html",
     "Bank of Baroda": "https://bankofbaroda.bank.in/interest-rate-and-service-charges/deposits-interest-rates/fixed-deposits-callable-and-non-callable-upto-ten-crores",
 }
 # Axis publishes its rates as a PDF; the page links to it (the file name carries the date, so the link is looked up each time).
-PDF_BANKS = {"Axis Bank": r"""["']([^"']*domestic-fixed-deposit-interest-rates-less-than-3-crores[^"']*\.pdf[^"']*)["']"""}
+PDF_BANKS = {"IDFC FIRST Bank": r"""["']([^"']*Interest-Rates-on-Retail-Deposits[^"']*\.pdf[^"']*)["']""",
+             "Axis Bank": r"""["']([^"']*domestic-fixed-deposit-interest-rates-less-than-3-crores[^"']*\.pdf[^"']*)["']"""}
 # Kotak builds its table with JavaScript; a headless browser (pip install playwright; playwright install chromium) renders the page.
-RENDER_BANKS = {"Kotak Mahindra Bank": "Fixed Deposit"}
+RENDER_BANKS = {"Kotak Mahindra Bank": "Fixed Deposit", "Yes Bank": None, "IndusInd Bank": None, "Bank of India": None}
+RENDER_FIRST = {"Yes Bank", "IndusInd Bank", "Bank of India"}      # their tables only appear after scrolling, so a plain download is incomplete
+# Bank of India shows general rates on the first tab and senior rates on the "SENIOR CITIZEN" tab (same rows)
+SENIOR_TAB = {"Bank of India": "SENIOR CITIZEN"}
 DEFAULT_SENIOR_ADD = 0.50      # only used when a page has no senior column and does not state its own add-on
 MIN_DAYS, MAX_DAYS = 7, 3650
 
@@ -97,7 +108,7 @@ def slab_days(label):
     t = label.lower().replace("–", "-").replace("—", "-").replace("≤", "<=").replace("&lt;", "<")
     t = re.sub(r"[*#$]+", " ", t)
     t = re.sub(r"\band\s+(?:up\s*to|less than)\b", lambda m: "to" + (" less than" if "less" in m.group(0) else ""), t)   # "400 days and upto 2 years", "271 days & above and less than 1 year"
-    t = re.sub(r"\bupto\b", "to", t)
+    t = re.sub(r"\bupto\b|\bup\s+to\b", "to", t)
     t = re.sub(r"\band above\b", "& above", t)
     t = re.sub(r"\bbut\b", "to", t)                      # "3 years & above but less than 4 years"
     if "<" in t and not re.search(r"\bto\b", t) and not re.match(r"\s*<", t):
@@ -196,8 +207,9 @@ def senior_addon(text):
     return DEFAULT_SENIOR_ADD, False
 
 
-def parse(html, url=""):
-    p = Tables(); p.feed(html)
+def parse_tables(html, url=""):
+    """Every table on the page that looks like a rate table, in page order (list of result dicts)."""
+    p = Tables(); p.feed(html); found = []
     text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html))
     add, add_found = senior_addon(text)
     for tbl in p.tables:
@@ -215,6 +227,7 @@ def parse(html, url=""):
             g = num(r[gcol]) if len(r) > gcol else None
             if g is None: continue
             s = (num(r[scol]) if len(r) > scol else None) if scol is not None else round(g + add, 2)
+            if scol is not None and s is None: continue      # e.g. a special product with "Not listed" for seniors
             slabs.append([max(lo, MIN_DAYS), min(hi, MAX_DAYS), g, s])
         merged = resolve_overlaps(slabs)
         if len(merged) < 8: continue
@@ -223,8 +236,14 @@ def parse(html, url=""):
         own = " ".join(" ".join(r) for r in tbl[:8])
         pos = text.find(tbl[0][0]) if tbl[0] and tbl[0][0] else -1
         eff = latest_date(own) or (latest_date(text[max(0, pos - 500):pos]) if pos > 0 else None) or latest_date(text)
-        return {"slabs": merged, "source": url, "effective": eff, "notes": f"tenor column {tcol}, general column {gcol}; {how}"}
-    raise ValueError("deposit-rate table not found on page")
+        found.append({"slabs": merged, "source": url, "effective": eff, "notes": f"tenor column {tcol}, general column {gcol}; {how}"})
+    return found
+
+
+def parse(html, url=""):
+    found = parse_tables(html, url)
+    if not found: raise ValueError("deposit-rate table not found on page")
+    return found[0]
 
 
 def parse_text(text, url=""):
@@ -262,19 +281,34 @@ def pdf_text(data):
     raise RuntimeError("reading a PDF needs:  pip install pypdf")
 
 
+LAST_TEXT = ""
+
+
 def render(url, click=None):
-    """Page HTML after JavaScript has run (needs: pip install playwright ; playwright install chromium)."""
+    """Page HTML after JavaScript has run and the page was scrolled to the bottom (lazy-loaded tables).
+    Needs: pip install playwright ; playwright install chromium"""
+    global LAST_TEXT
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
         raise RuntimeError("this page needs a browser engine:  pip install playwright  then  playwright install chromium")
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
     with sync_playwright() as pw:
-        b = pw.chromium.launch(); pg = b.new_context(ignore_https_errors=INSECURE).new_page()
-        pg.goto(url, wait_until="networkidle", timeout=90000)
+        b = pw.chromium.launch(args=["--disable-http2"])          # some bank sites break on HTTP/2
+        pg = b.new_context(ignore_https_errors=INSECURE, user_agent=ua, viewport={"width": 1400, "height": 900}).new_page()
+        pg.goto(url, wait_until="domcontentloaded", timeout=90000)   # "networkidle" never happens on pages with trackers
+        try: pg.wait_for_load_state("networkidle", timeout=20000)
+        except Exception: pass
+        for _ in range(14):                                          # scroll down so lazy-loaded tables appear
+            pg.evaluate("window.scrollBy(0, 900)"); pg.wait_for_timeout(500)
+        pg.wait_for_timeout(2000)
         if click:
             try: pg.get_by_text(click, exact=True).first.click(timeout=5000); pg.wait_for_timeout(2000)
             except Exception: pass
-        html = pg.content(); b.close()
+        html = pg.content()
+        try: LAST_TEXT = pg.inner_text("body")
+        except Exception: LAST_TEXT = ""
+        b.close()
     return html
 
 
@@ -317,6 +351,8 @@ def scrape(bank, html=None):
         r = parse_text(text, link); r["source"] = link
         return r
     if html is not None: return parse(html, url)
+    if bank in SENIOR_TAB: return scrape_two_tabs(bank, url)
+    if bank in RENDER_FIRST: return parse(render(url, RENDER_BANKS[bank]), url)
     page = fetch(url)
     try: return parse(page, url)
     except ValueError:
@@ -325,6 +361,26 @@ def scrape(bank, html=None):
     try: return parse(page, url)
     except ValueError:
         return parse(render(url, RENDER_BANKS[bank]), url)
+
+
+def scrape_two_tabs(bank, url):
+    """General rates from the first table, senior rates from the first table on the senior tab (same tenor rows)."""
+    html = render(url)
+    tabs = parse_tables(html, url)
+    if len(tabs) < 2: tabs = parse_tables(render(url, SENIOR_TAB[bank]), url)    # senior table only appears after clicking its tab
+    if len(tabs) < 2: raise ValueError("senior-citizen table not found")
+    gen, sen = tabs[0], tabs[1]
+    at = lambda tab, d: next((x[2] for x in tab["slabs"] if x[0] <= d <= x[1]), None)
+    lo, hi = max(gen["slabs"][0][0], sen["slabs"][0][0]), min(gen["slabs"][-1][1], sen["slabs"][-1][1])
+    cuts = sorted({x[0] for t in (gen, sen) for x in t["slabs"] if lo <= x[0] <= hi})
+    slabs = []
+    for i, c in enumerate(cuts):
+        end = (cuts[i + 1] - 1) if i + 1 < len(cuts) else hi
+        g, sr = at(gen, c), at(sen, c)
+        if g is None or sr is None: raise ValueError("general and senior tables do not cover the same tenors")
+        if slabs and slabs[-1][2:] == [g, sr]: slabs[-1][1] = end
+        else: slabs.append([c, end, g, sr])
+    return {"slabs": slabs, "source": url, "effective": gen["effective"], "notes": "general from the first tab, senior from the senior tab"}
 
 
 def dump_tables(html, path):
@@ -348,8 +404,16 @@ if __name__ == "__main__":
         try:
             html = open(a.html, encoding="utf-8").read() if a.html else None
             if a.debug and n not in PDF_BANKS:
-                h = html or (render(BANKS[n], RENDER_BANKS[n]) if n in RENDER_BANKS else fetch(BANKS[n]))
-                dump_tables(h, "debug_" + re.sub(r"\W+", "_", n) + ".txt")
+                tag = re.sub(r"\W+", "_", n)
+                if html: dump_tables(html, f"debug_{tag}.txt")
+                else:
+                    try: dump_tables(fetch(BANKS[n]), f"debug_{tag}.txt")
+                    except Exception as e: print(f"  (plain download for debug failed: {e})", file=sys.stderr)
+                    if n in RENDER_BANKS:
+                        try:
+                            dump_tables(render(BANKS[n], RENDER_BANKS[n]), f"debug_{tag}_browser.txt")
+                            open(f"debug_{tag}_text.txt", "w", encoding="utf-8").write(LAST_TEXT)
+                        except Exception as e: print(f"  (browser view for debug failed: {e})", file=sys.stderr)
             r = scrape(n, html)
             print(n, json.dumps(r, indent=0))
         except Exception as e:
