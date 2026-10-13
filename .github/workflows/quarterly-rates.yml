@@ -23,7 +23,7 @@ jobs:
         run: |
           cd rate-feed
           python rate_agent.py --prev rates.json --out rates.json
-      -      - name: Open a pull request for review
+      - name: Open a pull request for review
         uses: peter-evans/create-pull-request@v6
         with:
           branch: rates/auto-update
