@@ -1,30 +1,33 @@
-   name: Quarterly FD rates
-   on:
-     schedule:
-       - cron: "30 4 5 1,4,7,10 *"
-     workflow_dispatch: {}
-   permissions:
-     contents: write
-     pull-requests: write
-   jobs:
-     fetch:
-       runs-on: ubuntu-latest
-       steps:
-         - uses: actions/checkout@v4
-         - uses: actions/setup-python@v5
-           with: { python-version: "3.12" }
-         - run: pip install anthropic
-         - name: Fetch rates with the rate agent
-           env:
-             ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-           run: |
-             cd rate-feed
-             python rate_agent.py --prev rates.json --out rates.json
-         - name: Open a pull request for review
-           uses: peter-evans/create-pull-request@v6
-           with:
-             branch: rates/auto-update
-             title: "FD rates update"
-             commit-message: "Update FD rates"
-             body-path: rate-feed/review.md
-             add-paths: rate-feed/rates.json
+name: Quarterly FD rates
+on:
+  schedule:
+    - cron: "30 4 5 1,4,7,10 *"   # 5th of Jan/Apr/Jul/Oct, 10:00 IST
+  workflow_dispatch: {}            # "Run workflow" button for a manual refresh
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Install tools (AI fallback, PDF reader, headless browser for Kotak)
+        run: |
+          pip install anthropic pypdf playwright
+          playwright install --with-deps chromium
+      - name: Fetch rates with the rate agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          cd rate-feed
+          python rate_agent.py --prev rates.json --out rates.json
+      - name: Open a pull request for review
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: rates/auto-update
+          title: "FD rates update"
+          commit-message: "Update FD rates"
+          body-path: rate-feed/review.md
+          add-paths: rate-feed/rates.json
