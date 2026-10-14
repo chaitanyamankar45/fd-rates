@@ -1,5 +1,5 @@
 {
- "asOf": "2026-10-13",
+ "asOf": "2026-10-14",
  "sample": false,
  "banks": {
   "Union Bank of India": {
@@ -300,7 +300,7 @@
     ]
    ],
    "source": "https://www.icici.bank.in/personal-banking/deposits/fixed-deposit/fd-interest-rates",
-   "effective": "2026-10-13"
+   "effective": "2026-10-14"
   },
   "Canara Bank": {
    "slabs": [
